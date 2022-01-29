@@ -1,2 +1,9 @@
-for i in 0..100 step 2:
-  print(i)
+
+widget avatar:
+  text:
+    text: 'f'
+  jj: '4'
+
+
+
+print(avatar)

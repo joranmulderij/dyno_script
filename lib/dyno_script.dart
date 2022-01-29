@@ -1,5 +1,9 @@
 library dyno_script;
 
+import 'package:dyno_script/typedef.dart';
+import 'package:dyno_script/widgets.dart';
+import 'package:flutter/material.dart';
+
 import 'nodes.dart';
 import 'package:petitparser/petitparser.dart';
 
@@ -8,11 +12,12 @@ class ParserState {
 }
 
 class Program {
-  Node mainNode;
+  final Node mainNode;
+  final DynoMap variables;
 
-  Program(this.mainNode);
+  Program(this.mainNode, this.variables);
 
-  static Program parse(String input) {
+  static Program fromText(String input, {DynoMap initialState = const {}}) {
     Node main = Node(MainStatement());
     List<String> linesStr = input.split('\n');
     List<Line> lines = [];
@@ -25,11 +30,17 @@ class Program {
       }
     }
     main.addLines(lines, 0);
-    return Program(main);
+    //print(main);
+    return Program(main, initialState);
   }
 
-  void execute(ExecutionState state) {
-    mainNode.execute(state);
+  void execute() {
+    mainNode.execute(StateInteractor(
+      getVariable: (name) => variables[name],
+      setVariable: (name, value, {bool calledByParent = false}) {
+        variables[name] = value;
+      },
+    ));
   }
 }
 
@@ -46,13 +57,14 @@ class UnexpectedIndent implements Exception {
 class ParserException implements Exception {
   final String message;
   ParserException(this.message);
+
+  @override
+  String toString() {
+    return 'ParserException: $message';
+  }
 }
 
 class VariableName {
-  String name;
-
-  VariableName(this.name);
-
   static final Parser<String> parser =
       letter().seq(letter().or(digit()).or(char('_')).star()).flatten();
 }
@@ -64,8 +76,9 @@ class Line {
 
   Line(this.indent, this.text, this.statement);
 
-  execute(ExecutionState state) {
-    return statement.execute(state);
+  @override
+  String toString() {
+    return 'Line(indent: $indent, text: $text)';
   }
 
   static Line? parseFromString(String input, ParserState parserState) {
@@ -75,6 +88,9 @@ class Line {
     Statement? statement;
 
     for (var i = 0; i < input.length; i++) {
+      if (input[i] == '#') {
+        return null;
+      }
       if (input[i] != ' ') {
         inIndent = false;
         text += input[i];
@@ -103,19 +119,18 @@ class Line {
 
 typedef DynoFunction = Function(List<dynamic>);
 
-class ExecutionState {
-  Map<String, dynamic> variables = {};
-  Map<String, DynoFunction> functions = {};
-}
-
 abstract class Statement {
-  execute(ExecutionState state, {List<Node> children = const []});
+  execute(StateInteractor stateInteractor, {List<Node> children = const []});
 
   static Statement parseFromString(String input) {
     final List<Parser<Statement>> statementParsers = [
       AssingStatement.parser,
       ExpressionStatement.parser,
       ForStatement.parser,
+      WhileStatement.parser,
+      FunctionCreateStatement.parser,
+      WidgetCreateStatement.parser,
+      WidgetStatement.parser,
     ];
     for (Parser<Statement> parser in statementParsers) {
       final result = parser.end().parse(input);
@@ -123,7 +138,7 @@ abstract class Statement {
         return result.value;
       }
     }
-    throw ParserException('Could not parse the statement.');
+    throw ParserException('Could not parse the statement: $input');
     // AssingStatement? assingStatement = AssingStatement.tryParse(input);
     // if (assingStatement != null) {
     //   return assingStatement;
@@ -142,10 +157,96 @@ abstract class Statement {
 
 class MainStatement implements Statement {
   @override
-  execute(ExecutionState state, {List<Node>? children}) {
+  execute(StateInteractor state, {List<Node>? children}) {
     for (var line in children!) {
       line.execute(state);
     }
+  }
+}
+
+class FunctionCreateStatement implements Statement {
+  final String name;
+  final List<String> arguments;
+
+  FunctionCreateStatement(this.name, this.arguments);
+
+  static final Parser<FunctionCreateStatement> parser = (string('fun ') &
+          VariableName.parser &
+          char('(') &
+          VariableName.parser &
+          (char(',') & VariableName.parser).star() &
+          char(')') &
+          char(':'))
+      .map((value) {
+    return FunctionCreateStatement(
+        value[1], List<String>.from(value[4].map((v) => v[1]))..add(value[3]));
+  });
+
+  @override
+  execute(StateInteractor state, {List<Node>? children}) {
+    state.setVariable(
+      name,
+      (List<dynamic> arguments) {
+        for (var i = 0; i < arguments.length; i++) {
+          state.setVariable(this.arguments[i], arguments[i]);
+        }
+        for (var child in children!) {
+          child.execute(state);
+        }
+      },
+    );
+  }
+}
+
+class WidgetStatement implements Statement {
+  final DynoWidget widget;
+  final String name;
+
+  WidgetStatement(this.name, this.widget);
+
+  static final Parser<WidgetStatement> parser =
+      (DynoWidget.widgetList.keys.map((e) => string(e)).toChoiceParser() &
+              char(':'))
+          .map((value) {
+    return WidgetStatement(value[0], DynoWidget.widgetList[value[0]]!);
+  });
+
+  @override
+  execute(StateInteractor state, {List<Node>? children}) {
+    Map<String, dynamic> properties = {};
+    List<Widget> c = [];
+    for (var child in children!) {
+      if (child.statement is AssingStatement) {
+        properties[(child.statement as AssingStatement).variable] =
+            child.statement!.execute(state, children: child.children);
+      } else if (child.statement is WidgetStatement) {
+        c.add(child.statement!.execute(state, children: child.children));
+      }
+    }
+    return widget.build(properties, c);
+  }
+}
+
+class WidgetCreateStatement implements Statement {
+  String name;
+
+  WidgetCreateStatement(this.name);
+
+  static final Parser<WidgetCreateStatement> parser =
+      (string('widget ') & VariableName.parser & char(':')).map((value) {
+    return WidgetCreateStatement(value[1]);
+  });
+
+  @override
+  execute(StateInteractor state, {List<Node>? children}) {
+    Widget? widget;
+    for (var child in children!) {
+      if (child.statement is WidgetStatement) {
+        widget = child.statement!.execute(state, children: child.children);
+        break;
+      }
+    }
+    state.setVariable(name, widget);
   }
 }
 
@@ -156,21 +257,16 @@ class AssingStatement implements Statement {
   AssingStatement(this.variable, this.expression);
 
   static Parser<Statement> get parser =>
-      (VariableName.parser & char('=') & ExpressionGrammar.parser)
+      (VariableName.parser & char(':').trim() & ExpressionGrammar.parser)
           .map((parsed) {
         return AssingStatement(parsed[0], parsed[2]);
       });
 
   @override
-  execute(ExecutionState state, {List<Node>? children}) {
-    state.variables[variable] = expression.evaluate(state);
-    return null;
+  execute(StateInteractor state, {List<Node>? children}) {
+    state[variable] = expression.evaluate(state);
+    return state[variable];
   }
-}
-
-class FunctionStatement implements Statement {
-  @override
-  void execute(ExecutionState state, {List<Node>? children}) {}
 }
 
 class ExpressionStatement implements Statement {
@@ -182,7 +278,7 @@ class ExpressionStatement implements Statement {
       ExpressionGrammar.parser.map((value) => ExpressionStatement(value));
 
   @override
-  void execute(ExecutionState state, {List<Node>? children}) {
+  void execute(StateInteractor state, {List<Node>? children}) {
     expression.evaluate(state);
   }
 }
@@ -207,10 +303,10 @@ class ForStatement implements Statement {
           (string(' step ') & ExpressionGrammar.parser).optional() &
           char(':'))
       .map((value) => ForStatement(value[2], value[6], value[8],
-          value.length > 10 ? value[9][1] : IntegerExpression(1)));
+          value.length > 11 ? value[9][1] : IntegerExpression(1)));
 
   @override
-  void execute(ExecutionState state, {List<Node>? children}) {
+  void execute(StateInteractor state, {List<Node>? children}) {
     var startValue = start.evaluate(state);
     var endValue = end.evaluate(state);
     var stepValue = step.evaluate(state);
@@ -220,19 +316,44 @@ class ForStatement implements Statement {
     assert(startValue <= endValue);
     assert(stepValue > 0);
     for (var i = startValue; i < endValue; i += stepValue) {
-      state.variables[variable] = i;
+      state[variable] = i;
       if (children != null) {
-        for (var statement in children.map((e) => e.statement!)) {
-          statement.execute(state);
+        for (var child in children) {
+          child.execute(state);
         }
       }
     }
   }
 }
 
+class WhileStatement implements Statement {
+  Expression condition;
+
+  WhileStatement(this.condition);
+
+  static Parser<Statement> get parser =>
+      (string('while') & char(' ') & ExpressionGrammar.parser & char(':'))
+          .map((value) => WhileStatement(value[2]));
+
+  @override
+  void execute(StateInteractor state, {List<Node>? children}) {
+    var conditionValue = condition.evaluate(state);
+    assert(conditionValue is bool);
+    while (conditionValue) {
+      if (children != null) {
+        for (var statement in children.map((e) => e.statement!)) {
+          statement.execute(state);
+        }
+      }
+      conditionValue = condition.evaluate(state);
+      assert(conditionValue is bool);
+    }
+  }
+}
+
 // An expression is never in an evaluated state, but can be evaluated at runtime.
 abstract class Expression {
-  dynamic evaluate(ExecutionState state);
+  dynamic evaluate(StateInteractor state);
 }
 
 class ExpressionGrammar extends GrammarDefinition {
@@ -240,23 +361,34 @@ class ExpressionGrammar extends GrammarDefinition {
 
   @override
   Parser start() {
-    return ref0(fullExpression).cast<Expression>();
+    // final builder = ExpressionBuilder();
+    // builder.group().primitive(ref0(_fullExpression));
+    // for (Operator op in Operator.operators) {
+    //   builder.group().left(string(op.symbol),
+    //       (Expression a, String _, Expression b) => op.getExpression(a, b));
+    // }
+    // return builder.build().cast<Expression>();
+    return ref0(_fullExpression).cast<Expression>();
   }
 
-  Parser<Expression> fullExpression() {
-    return (ref0(_function) |
+  Parser<Expression> _fullExpression() {
+    return (ref0(_operatorExpression) | ref0(_expression)).cast<Expression>();
+  }
+
+  Parser<Expression> _expression() {
+    return (ref0(_parans) |
+            ref0(_function) |
             ref0(_double) |
             ref0(_integer) |
             ref0(_variable) |
-            ref0(_string) |
-            ref0(_parans))
+            ref0(_string))
         .map((value) => value as Expression);
   }
 
   Parser<Expression> _function() => (VariableName.parser &
           char('(') &
-          ref0(fullExpression) &
-          (char(',') & ref0(fullExpression)).star() &
+          ref0(_fullExpression) &
+          (char(',') & ref0(_fullExpression)).star() &
           char(')'))
       .map((value) => FunctionExpression(
           value[0], [value[2], ...value[3].map((e) => e[1])]));
@@ -268,8 +400,9 @@ class ExpressionGrammar extends GrammarDefinition {
       (digit().star() & char('.').optional() & digit().plus())
           .flatten()
           .map((value) => DoubleExpression(double.parse(value)));
-  Parser<Expression> _parans() => (char('(') & ref0(fullExpression) & char(')'))
-      .map((value) => value[1] as Expression);
+  Parser<Expression> _parans() =>
+      (char('(') & ref0(_fullExpression) & char(')'))
+          .map((value) => value[1] as Expression);
   Parser<Expression> _variable() =>
       VariableName.parser.map((value) => VariableExpression(value));
   Parser<Expression> _string() => ((char('"') &
@@ -279,6 +412,13 @@ class ExpressionGrammar extends GrammarDefinition {
       .map((value) => StringExpression(value[1].join()
         ..replaceAll(r"\'", "'")
         ..replaceAll(r'\"', '"')));
+
+  Parser<Expression> _operatorExpression() =>
+      (ref0(_expression) & ref0(_operator) & ref0(_expression))
+          .map((value) => OperatorExpression(value[0], value[1], value[2]));
+  Parser<Operator> _operator() => Operator.operators
+      .map<Parser<Operator>>((e) => string(e.symbol).map((value) => e))
+      .toChoiceParser();
 }
 
 // class ExpressionGrammar extends GrammarDefinition {
@@ -332,6 +472,16 @@ class Operator {
       (a, b) => OperatorExpression(a, operators[3], b),
       (a, b) => a / b,
     ),
+    Operator(
+      '>',
+      (a, b) => OperatorExpression(a, operators[4], b),
+      (a, b) => a > b,
+    ),
+    Operator(
+      '<',
+      (a, b) => OperatorExpression(a, operators[5], b),
+      (a, b) => a < b,
+    ),
   ];
 }
 
@@ -343,7 +493,7 @@ class OperatorExpression extends Expression {
   OperatorExpression(this.left, this.op, this.right);
 
   @override
-  dynamic evaluate(ExecutionState state) {
+  dynamic evaluate(StateInteractor state) {
     return op.getValue(left.evaluate(state), right.evaluate(state));
   }
 }
@@ -354,7 +504,7 @@ class IntegerExpression extends Expression {
   IntegerExpression(this.value);
 
   @override
-  dynamic evaluate(ExecutionState state) {
+  dynamic evaluate(StateInteractor state) {
     return value;
   }
 
@@ -370,7 +520,7 @@ class DoubleExpression extends Expression {
   DoubleExpression(this.value);
 
   @override
-  dynamic evaluate(ExecutionState state) {
+  dynamic evaluate(StateInteractor state) {
     return value;
   }
 
@@ -386,7 +536,7 @@ class StringExpression extends Expression {
   StringExpression(this.value);
 
   @override
-  dynamic evaluate(ExecutionState state) {
+  dynamic evaluate(StateInteractor state) {
     return value;
   }
 
@@ -402,8 +552,8 @@ class VariableExpression extends Expression {
   VariableExpression(this.variable);
 
   @override
-  dynamic evaluate(ExecutionState state) {
-    return state.variables[variable];
+  dynamic evaluate(StateInteractor state) {
+    return state[variable];
   }
 }
 
@@ -414,9 +564,8 @@ class FunctionExpression extends Expression {
   FunctionExpression(this.name, this.arguments);
 
   @override
-  dynamic evaluate(ExecutionState state) {
-    return state.functions[name]
-        ?.call(arguments.map((e) => e.evaluate(state)).toList());
+  dynamic evaluate(StateInteractor state) {
+    return state[name].call(arguments.map((e) => e.evaluate(state)).toList());
   }
 }
 
