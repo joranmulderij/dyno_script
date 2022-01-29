@@ -1,9 +1,8 @@
 
 widget avatar:
-  text:
-    text: 'f'
-  jj: '4'
+  materialApp:
+    scaffold:
+      text:
+        text: 'ffff'
 
-
-
-print(avatar)
+runApp(avatar)

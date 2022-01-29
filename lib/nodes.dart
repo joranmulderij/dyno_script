@@ -7,17 +7,6 @@ class Node {
 
   Node(this.statement);
 
-  // Map<String, dynamic> get recursiveVariables {
-  //   assert(statement is AssingStatement || statement is WidgetCreateStatement);
-  //   print(_variables);
-  //   Map<String, dynamic> variables = {};
-  //   for (var child in children) {
-  //     variables.addAll(child.recursiveVariables);
-  //   }
-  //   variables.addAll(_variables);
-  //   return variables;
-  // }
-
   int addLines(List<Line> lines, int expectedIndent) {
     for (var i = 0; i < lines.length; i++) {
       Line line = lines[i];

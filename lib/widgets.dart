@@ -25,5 +25,53 @@ class DynoWidget {
         'text': null,
       },
     ),
+    'container': DynoWidget(
+      name: 'Text',
+      description: 'Displays Text to the screen',
+      build: (data, children) {
+        return Container(
+          child: children[0],
+        );
+      },
+      knownParameters: {
+        'text': null,
+      },
+    ),
+    'column': DynoWidget(
+      name: 'Text',
+      description: 'Displays Text to the screen',
+      build: (data, children) {
+        return Column(
+          children: children,
+        );
+      },
+      knownParameters: {
+        'text': null,
+      },
+    ),
+    'scaffold': DynoWidget(
+      name: 'Text',
+      description: 'Displays Text to the screen',
+      build: (data, children) {
+        return Scaffold(
+          body: children[0],
+        );
+      },
+      knownParameters: {
+        'text': null,
+      },
+    ),
+    'materialApp': DynoWidget(
+      name: 'Text',
+      description: 'Displays Text to the screen',
+      build: (data, children) {
+        return MaterialApp(
+          home: children[0],
+        );
+      },
+      knownParameters: {
+        'text': null,
+      },
+    ),
   };
 }
